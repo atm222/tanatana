@@ -75,7 +75,7 @@
 <script>
   // ===== 設定 =====================================================
   // GASをWebアプリとしてデプロイしたURL（/exec で終わるもの）に書き換える
-  const GAS_URL = 'https://script.google.com/macros/s/AKfycbz_7wyYlzHMfY3ZgpLScQDsVctPdw0c1zKWM0-jM9FTuKVksX12AU9hr8OhKeBp7_xa/exec';
+  const GAS_URL = 'ここにGASのデプロイURLを貼り付け';
   // GAS側で TOKEN を設定した場合のみ同じ値を入れる（未使用なら空のまま）
   const TOKEN = 'tana2026secret';
   const DEDUP_MS = 3000; // 同一コードの重複登録を防ぐ時間(ミリ秒)
@@ -91,8 +91,9 @@
 
   let items = [];          // 画面表示用のスキャン一覧
   let counter = 0;         // 読み取り順
-  let lastContent = null, lastAt = 0; // 重複防止用
+  let lastContent = null, lastAt = 0; // 連打防止用
   let scanner = null, running = false;
+  const registered = new Set(); // 登録済みQR内容（二重登録の防止）
 
   function setStatus(msg, type) {
     statusEl.textContent = msg;
@@ -159,6 +160,7 @@
   }
   function beepOk()  { tone(880, 0.15, 0.35); }                 // 「ピッ」高音
   function beepErr() { tone(300, 0.18, 0.35); setTimeout(() => tone(300, 0.18, 0.35), 200); } // 低音×2
+  function beepDup() { tone(520, 0.12, 0.30); }                 // 「ポッ」中音（重複）
 
   // 初回タップ／クリックで音を有効化
   document.addEventListener('touchstart', initAudio, { once: true });
@@ -167,12 +169,18 @@
   // QR読み取り成功時のコールバック（常時連続で呼ばれる）
   function onScan(decodedText) {
     const now = Date.now();
-    if (decodedText === lastContent && now - lastAt < DEDUP_MS) {
-      setStatus('↺ 重複スキャン: ' + decodedText, 'dup');
-      return;
-    }
+    // 同じコードがカメラに映り続ける間は一定時間に1回だけ処理（連打・連続音の防止）
+    if (decodedText === lastContent && now - lastAt < DEDUP_MS) return;
     lastContent = decodedText;
     lastAt = now;
+
+    // 既に登録済みのQRは登録しない
+    if (registered.has(decodedText)) {
+      setStatus('↺ 登録済み（重複のため登録しません）: ' + decodedText, 'dup');
+      beepDup(); vibrate(60);
+      return;
+    }
+
     vibrate(200);  // 振動
     beepOk();      // 「ピッ」と鳴らす
     register(decodedText);
@@ -195,8 +203,15 @@
       const data = await res.json();
       if (data.ok) {
         item.status = '登録成功';
+        registered.add(content);
         if (data.timestamp) item.time = data.timestamp;
         setStatus('✓ 登録成功: ' + content, 'ok');
+      } else if (data.duplicate) {
+        // 既にシートに存在 → 登録せず、一覧の仮表示も取り消す
+        items = items.filter(x => x !== item);
+        registered.add(content);
+        setStatus('↺ 登録済み（重複のため登録しません）: ' + content, 'dup');
+        beepDup();
       } else {
         item.status = '登録失敗';
         setStatus('✗ 登録失敗: ' + content + '（' + (data.error || '') + '）', 'err');
@@ -222,6 +237,8 @@
           order: total - i, time: r.timestamp, content: r.content, status: r.status
         }));
         counter = total;
+        // 取得済みの内容を登録済みセットに反映（以後の重複を即判定）
+        data.rows.forEach(r => registered.add(String(r.content)));
         render();
         setStatus('スプレッドシートの最新一覧を表示しました', 'ok');
       } else {
